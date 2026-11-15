@@ -1,1 +1,1 @@
-# Cheap ESP32 Temperatur Monitor-Display
+# Cheap ESP32 Temperature Monitor-Display
