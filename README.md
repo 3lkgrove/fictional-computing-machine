@@ -1,5 +1,5 @@
 # Cheap ESP32 Temperature Monitor-Display
-# 🌡️ ESP32-C3 Temperature & Humidity Telemetry Monitor (`v1.4.0`)
+# 🌡️ ESP32-C3 Temperature & Humidity Telemetry Monitor (`v1.0.0`)
 
 [![PlatformIO](https://img.shields.io/badge/PlatformIO-ESP32--C3-FF6F00?style=for-the-badge&logo=platformio&logoColor=white)](https://platformio.org/)
 [![Framework](https://img.shields.io/badge/Framework-Arduino-00979D?style=for-the-badge&logo=arduino&logoColor=white)](https://www.arduino.cc/)
