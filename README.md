@@ -33,6 +33,9 @@ A responsive, single-page web telemetry and Over-The-Air (OTA) monitor built in 
   * Switch between **Ocean Blue**, **Emerald**, **Amber**, and **Violet Slate** themes.
   * Toggle runtime serial debug output, inspect a ring-buffered **Live Serial Log Viewer** in the browser with auto-scroll and clear controls, and push `.bin` firmware updates with a live percentage progress bar via `/update`.
 
+    ![WebGui Interface](images/upper_web_gui.png)
+    ![WebGui Interface](images/lower_web_gui.png)
+
 ---
 
 ## 🛠️ Hardware Required
