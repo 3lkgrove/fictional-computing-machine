@@ -8,6 +8,7 @@
    github - https://github.com/3lkgrove
    Changelog:
    1.0.0 - new code
+   1.0.1 - add task watchdog timer, disable BT, cap WiFi TX at 8.5 dBm, disable modem sleep when plugged in
 */
 
 #ifndef CONFIG_H
@@ -23,12 +24,33 @@
 #include <Update.h>
 #include <WebServer.h>
 #include <time.h>
+#include <esp_system.h>
+#include <esp_task_wdt.h>
+#if defined(CONFIG_BT_ENABLED) || defined(SOC_BT_SUPPORTED)
+#include <esp_bt.h>
+#endif
 
 // Firmware & Project Metadata Macros
-#define VER "1.0.0"
-#define VER_BUILD "11212026"
+#define VER "1.0.1"
+#define VER_BUILD "11222026"
 #define EMAIL "3lkgrove@pm.me"
 #define FIRMWARELINK "https://github.com/3lkgrove/fictional-computing-machine"
+
+// Task Watchdog Timer Configuration
+#ifndef WDT_TIMEOUT_SEC
+#define WDT_TIMEOUT_SEC 15
+#endif
+
+// Radio & Power Management Defaults (tuned for plugged-in ESP32-C3 operation)
+#ifndef DISABLE_BLUETOOTH_RADIO
+#define DISABLE_BLUETOOTH_RADIO 1
+#endif
+#ifndef WIFI_MAX_TX_POWER
+#define WIFI_MAX_TX_POWER WIFI_POWER_8_5dBm
+#endif
+#ifndef WIFI_DISABLE_MODEM_SLEEP_WHEN_PLUGGED_IN
+#define WIFI_DISABLE_MODEM_SLEEP_WHEN_PLUGGED_IN 1
+#endif
 
 // WiFi & Network Defaults
 #define WIFI_SSID "CHANGE-ME"
@@ -99,6 +121,9 @@ struct DeviceState {
     bool sensorEnabled = true;
     bool useFahrenheit = true;
     bool sensorReady = false;
+    bool wdtEnabled = false;
+    uint32_t wdtTimeoutSec = WDT_TIMEOUT_SEC;
+    uint32_t wdtResetCount = 0;
     float tempC = NAN;
     float humidity = NAN;
     unsigned long lastReadMs = 0;
@@ -108,6 +133,16 @@ struct DeviceState {
 extern DeviceState gState;
 extern Preferences gPrefs;
 extern WebServer server;
+
+// Radio & power management helpers
+void disableBluetoothRadio();
+void applyWifiRadioPowerConfig();
+
+// Task Watchdog Timer helpers
+void initWatchdog(uint32_t timeoutSec = WDT_TIMEOUT_SEC);
+void feedWatchdog();
+void setWatchdogEnabled(bool enabled);
+void triggerWatchdogTest();
 
 // Built-in LED, WiFi STA/Fallback AP, Time/TZ, and mDNS helpers
 void initWifiLed();
