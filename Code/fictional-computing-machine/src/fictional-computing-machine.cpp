@@ -23,6 +23,105 @@ static SemaphoreHandle_t gLogMutex = nullptr;
 static bool gLastWifiConnected = false;
 static bool gMdnsStarted = false;
 static bool gNtpConfigured = false;
+static bool gWdtInitialized = false;
+static bool gWdtTaskAdded = false;
+static uint32_t gWdtTimeoutSec = WDT_TIMEOUT_SEC;
+
+void disableBluetoothRadio() {
+#if DISABLE_BLUETOOTH_RADIO
+#if defined(CONFIG_BT_ENABLED) || defined(SOC_BT_SUPPORTED)
+    if (esp_bt_controller_get_status() != ESP_BT_CONTROLLER_STATUS_IDLE) {
+        esp_bt_controller_disable();
+    }
+    if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_IDLE) {
+        esp_bt_controller_deinit();
+    }
+    DBG_PRINTLN("[RADIO] Bluetooth controller disabled");
+#else
+    DBG_PRINTLN("[RADIO] Bluetooth not supported/enabled in target build");
+#endif
+#endif
+}
+
+void applyWifiRadioPowerConfig() {
+#if WIFI_DISABLE_MODEM_SLEEP_WHEN_PLUGGED_IN
+    WiFi.setSleep(false);
+#endif
+    WiFi.setTxPower(WIFI_MAX_TX_POWER);
+}
+
+#if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5)
+static void configureTaskWdt(uint32_t timeoutSec) {
+    esp_task_wdt_config_t wdtCfg = {
+        .timeout_ms = timeoutSec * 1000U,
+        .idle_core_mask = 0,
+        .trigger_panic = true
+    };
+    if (esp_task_wdt_status(nullptr) == ESP_ERR_INVALID_STATE) {
+        esp_task_wdt_init(&wdtCfg);
+    } else {
+        esp_task_wdt_reconfigure(&wdtCfg);
+    }
+    if (esp_task_wdt_add(nullptr) == ESP_OK) {
+        gWdtTaskAdded = true;
+    }
+}
+#else
+static void configureTaskWdt(uint32_t timeoutSec) {
+    esp_task_wdt_init(timeoutSec, true);
+    if (esp_task_wdt_add(nullptr) == ESP_OK) {
+        gWdtTaskAdded = true;
+    }
+}
+#endif
+
+void initWatchdog(uint32_t timeoutSec) {
+    gWdtTimeoutSec = (timeoutSec > 0) ? timeoutSec : 15;
+    gState.wdtTimeoutSec = gWdtTimeoutSec;
+
+    esp_reset_reason_t reason = esp_reset_reason();
+    if (reason == ESP_RST_TASK_WDT || reason == ESP_RST_INT_WDT) {
+        gState.wdtResetCount++;
+    }
+
+    configureTaskWdt(gWdtTimeoutSec);
+    gWdtInitialized = true;
+    gState.wdtEnabled = gWdtTaskAdded;
+    esp_task_wdt_reset();
+    DBG_PRINTF("[WDT] Task watchdog initialized (timeout=%lus, resets=%lu)\n",
+               (unsigned long)gWdtTimeoutSec, (unsigned long)gState.wdtResetCount);
+}
+
+void feedWatchdog() {
+    if (!gWdtInitialized || !gWdtTaskAdded) return;
+    esp_task_wdt_reset();
+}
+
+void setWatchdogEnabled(bool enabled) {
+    if (!gWdtInitialized) return;
+    if (enabled) {
+        if (!gWdtTaskAdded) {
+            if (esp_task_wdt_add(nullptr) == ESP_OK) {
+                gWdtTaskAdded = true;
+            }
+        }
+        gState.wdtEnabled = gWdtTaskAdded;
+        esp_task_wdt_reset();
+    } else if (gWdtTaskAdded) {
+        if (esp_task_wdt_delete(nullptr) == ESP_OK) {
+            gWdtTaskAdded = false;
+        }
+        gState.wdtEnabled = false;
+    }
+}
+
+void triggerWatchdogTest() {
+    DBG_PRINTLN("[WDT] Manual test triggered — starving task watchdog until reset...");
+    setWatchdogEnabled(true);
+    while (true) {
+        delay(1000);
+    }
+}
 
 static String sanitizeHostname(const String &raw) {
     String lower = raw;
@@ -102,6 +201,7 @@ void startFallbackAp() {
     if (gState.apModeActive) return;
 
     WiFi.mode(WIFI_AP_STA);
+    applyWifiRadioPowerConfig();
     IPAddress apIp(192, 168, 4, 1);
     IPAddress subnet(255, 255, 255, 0);
     WiFi.softAPConfig(apIp, apIp, subnet);
@@ -128,6 +228,7 @@ void stopFallbackAp() {
     if (!gState.apModeActive) return;
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_STA);
+    applyWifiRadioPowerConfig();
     gState.apModeActive = false;
     DBG_PRINTLN("[AP] Fallback AP stopped (STA WiFi connected)");
 }
@@ -167,11 +268,13 @@ void applyWifiCredentials(const String &newSsid, const String &newPassword) {
     WiFi.disconnect(false);
     delay(150);
     WiFi.mode(gState.apModeActive ? WIFI_AP_STA : WIFI_STA);
+    applyWifiRadioPowerConfig();
     WiFi.setHostname(gState.hostname.c_str());
     WiFi.begin(gState.wifiSsid.c_str(), gState.wifiPassword.c_str());
 
     unsigned long startAttempt = millis();
     while (WiFi.status() != WL_CONNECTED && (millis() - startAttempt) < 15000) {
+        feedWatchdog();
         delay(500);
         DBG_PRINT(".");
     }
@@ -481,6 +584,8 @@ void setup() {
     delay(500);
 
     loadPreferences();
+    initWatchdog(WDT_TIMEOUT_SEC);
+    disableBluetoothRadio();
     setenv("TZ", gState.timeZone.c_str(), 1);
     tzset();
 
@@ -495,14 +600,17 @@ void setup() {
                APP_DEBUG_SERIAL, gState.serialDebug ? 1 : 0);
 
     initAht20Sensor();
+    feedWatchdog();
 
     WiFi.mode(WIFI_STA);
+    applyWifiRadioPowerConfig();
     WiFi.setHostname(gState.hostname.c_str());
     WiFi.begin(gState.wifiSsid.c_str(), gState.wifiPassword.c_str());
 
     DBG_PRINTF("[WIFI] Connecting to %s", gState.wifiSsid.c_str());
     unsigned long startAttempt = millis();
     while (WiFi.status() != WL_CONNECTED && (millis() - startAttempt) < 20000) {
+        feedWatchdog();
         delay(500);
         DBG_PRINT(".");
     }
@@ -517,11 +625,14 @@ void setup() {
 
     updateWifiStatusIndicator();
     updateClockState();
+    feedWatchdog();
 
     initWebServer();
+    feedWatchdog();
 }
 
 void loop() {
+    feedWatchdog();
     updateWifiStatusIndicator();
     updateClockState();
     handleWebClient();

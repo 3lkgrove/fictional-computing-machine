@@ -32,7 +32,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
     --accent: #a78bfa;
     --accent-soft: rgba(167, 139, 250, 0.15);
   }
-  * { box-sizing: border-box; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+- { box-sizing: border-box; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
   body {
     margin: 0;
     background: var(--bg);
@@ -154,10 +154,20 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
     border: 1px solid var(--card-border);
     font-weight: 600;
   }
+  button.danger {
+    background: rgba(239, 68, 68, 0.18);
+    color: #fca5a5;
+    border: 1px solid rgba(239, 68, 68, 0.45);
+    font-weight: 700;
+  }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
-  #otaStatus, #hostStatus, #wifiStatus, #tzStatus { margin-top: 10px; font-size: 0.9rem; color: var(--muted); }
+  #otaStatus, #hostStatus, #wifiStatus, #tzStatus, #wdtStatus {
+    margin-top: 10px;
+    font-size: 0.9rem;
+    color: var(--muted);
+  }
   #logBox {
     background: #060913;
     border: 1px solid var(--card-border);
@@ -377,6 +387,28 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
   <div class="card">
     <div class="header-top">
+      <h2 style="margin: 0;">Task Watchdog Timer</h2>
+      <button type="button" class="danger" id="wdtTestBtn" onclick="triggerWatchdogTest()">Test WDT Reset</button>
+    </div>
+    <div class="grid-3" style="margin-top: 12px;">
+      <div class="stat-box">
+        <div class="stat-label">Watchdog Status</div>
+        <div class="stat-val" id="wdtStateText">-</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">Timeout Window</div>
+        <div class="stat-val" id="wdtTimeoutText">-</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">WDT Reset Count</div>
+        <div class="stat-val" id="wdtResetsText">0</div>
+      </div>
+    </div>
+    <div id="wdtStatus">Automatically pauses during OTA firmware uploads and resumes afterward.</div>
+  </div>
+
+  <div class="card">
+    <div class="header-top">
       <h2 style="margin: 0;">Live Serial Log Viewer</h2>
       <div class="controls-row" style="gap: 10px;">
         <label style="display: inline-flex; align-items: center; gap: 6px; font-size: 0.88rem; cursor: pointer;">
@@ -537,6 +569,29 @@ async function saveTimeZone() {
   }
 }
 
+async function triggerWatchdogTest() {
+  const statusEl = document.getElementById("wdtStatus");
+  const btnEl = document.getElementById("wdtTestBtn");
+  const sec = (latestStatus && latestStatus.wdt_timeout_sec) ? latestStatus.wdt_timeout_sec : 15;
+
+  if (!confirm(`Trigger a real Task Watchdog reset test? The ESP32-C3 will stall and reboot in ~${sec} seconds.`)) {
+    return;
+  }
+
+  btnEl.disabled = true;
+  statusEl.textContent = `Watchdog test triggered — device will reboot in ~${sec}s...`;
+
+  try {
+    await fetch("/api/wdt/test", { method: "POST" });
+  } catch (e) {
+    // Expected if connection drops as device resets
+  }
+
+  setTimeout(() => {
+    location.reload();
+  }, (sec + 4) * 1000);
+}
+
 function computeMinMax(hist) {
   let minT = null, maxT = null, minH = null, maxH = null;
   for (const item of hist) {
@@ -676,6 +731,10 @@ async function refreshStatus() {
     const rssiInfo = describeRssi(d.wifi_rssi);
     document.getElementById("rssiText").textContent = rssiInfo.val;
     document.getElementById("rssiQualityText").textContent = rssiInfo.qual;
+
+    document.getElementById("wdtStateText").textContent = d.wdt_enabled ? "Active" : "Paused";
+    document.getElementById("wdtTimeoutText").textContent = `${d.wdt_timeout_sec || 15}s`;
+    document.getElementById("wdtResetsText").textContent = String(d.wdt_reset_count || 0);
 
     syncTzUi(d.timezone);
     document.getElementById("debugToggle").checked = d.serial_debug;
@@ -984,6 +1043,9 @@ static void handleStatus() {
     json += "\"sensor_enabled\":" + String(gState.sensorEnabled ? "true" : "false") + ",";
     json += "\"use_fahrenheit\":" + String(gState.useFahrenheit ? "true" : "false") + ",";
     json += "\"sensor_ready\":" + String(gState.sensorReady ? "true" : "false") + ",";
+    json += "\"wdt_enabled\":" + String(gState.wdtEnabled ? "true" : "false") + ",";
+    json += "\"wdt_timeout_sec\":" + String(gState.wdtTimeoutSec) + ",";
+    json += "\"wdt_reset_count\":" + String(gState.wdtResetCount) + ",";
     json += "\"temp_c\":" + floatToJson(gState.tempC) + ",";
     json += "\"humidity\":" + floatToJson(gState.humidity) + ",";
     json += "\"heap_total\":" + String(heapTotal) + ",";
@@ -1038,6 +1100,12 @@ static void handleClearLogs() {
     server.send(200, "application/json", "{\"ok\":true}");
 }
 
+static void handleWdtTest() {
+    server.send(200, "application/json", "{\"ok\":true,\"message\":\"Watchdog reset test started\"}");
+    server.handleClient();
+    triggerWatchdogTest();
+}
+
 static void handleSettings() {
     if (!server.hasArg("plain")) {
         server.send(400, "application/json", "{\"error\":\"Missing body\"}");
@@ -1078,6 +1146,7 @@ static void handleSettings() {
     if (reqSsid.length() > 0) {
         server.send(200, "application/json", "{\"ok\":true}");
         server.handleClient();
+        feedWatchdog();
         applyWifiCredentials(reqSsid, reqPass);
         return;
     }
@@ -1098,7 +1167,8 @@ static void handleUpdateUpload() {
     HTTPUpload &upload = server.upload();
 
     if (upload.status == UPLOAD_FILE_START) {
-        DBG_PRINTF("[OTA] Start upload: %s\n", upload.filename.c_str());
+        setWatchdogEnabled(false);
+        DBG_PRINTF("[OTA] Start upload: %s (WDT paused)\n", upload.filename.c_str());
         if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
             Update.printError(Serial);
         }
@@ -1116,10 +1186,12 @@ static void handleUpdateUpload() {
             DBG_PRINTF("[OTA] Success: %u bytes written. Rebooting...\n", upload.totalSize);
         } else {
             Update.printError(Serial);
+            setWatchdogEnabled(true);
         }
     } else if (upload.status == UPLOAD_FILE_ABORTED) {
         Update.end();
-        DBG_PRINTLN("[OTA] Upload aborted.");
+        setWatchdogEnabled(true);
+        DBG_PRINTLN("[OTA] Upload aborted (WDT resumed).");
     }
 }
 
@@ -1130,6 +1202,7 @@ static void handleUpdateComplete() {
         delay(250);
         ESP.restart();
     } else {
+        setWatchdogEnabled(true);
         server.send(500, "text/plain", "Update failed");
     }
 }
@@ -1139,6 +1212,7 @@ void initWebServer() {
     server.on("/api/status", HTTP_GET, handleStatus);
     server.on("/api/logs", HTTP_GET, handleLogs);
     server.on("/api/logs/clear", HTTP_POST, handleClearLogs);
+    server.on("/api/wdt/test", HTTP_POST, handleWdtTest);
     server.on("/api/settings", HTTP_POST, handleSettings);
     server.on("/update", HTTP_POST, handleUpdateComplete, handleUpdateUpload);
     server.begin();
