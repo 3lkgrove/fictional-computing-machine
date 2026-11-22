@@ -7,7 +7,7 @@
    email - 3lkgrove.pm.me
    github - https://github.com/3lkgrove
    Changelog:
-   1.0 - new code
+   1.0.0 - new code
 */
 
 #ifndef CONFIG_H
